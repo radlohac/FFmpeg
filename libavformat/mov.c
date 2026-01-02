@@ -392,6 +392,7 @@ static int mov_read_udta_string(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return mov_metadata_loci(c, pb, atom.size);
     case MKTAG( 'm','a','n','u'): key = "make"; break;
     case MKTAG( 'm','o','d','l'): key = "model"; break;
+    case MKTAG( 'n','a','m','e'): key = "name"; break;
     case MKTAG( 'p','c','s','t'): key = "podcast";
         parse = mov_metadata_int8_no_padding; break;
     case MKTAG( 'p','g','a','p'): key = "gapless_playback";
@@ -1073,6 +1074,40 @@ fail:
     return ret;
 }
 #endif
+
+static int mov_read_srat(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    AVStream *st;
+    int32_t sample_rate;
+
+    if (atom.size < 8 || c->fc->nb_streams < 1)
+        return 0;
+
+    st = c->fc->streams[c->fc->nb_streams-1];
+    if (st->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+        av_log(c->fc, AV_LOG_WARNING, "'srat' within non-audio sample entry, skip\n");
+        return 0;
+    }
+
+    if (!c->isom) {
+        av_log(c->fc, AV_LOG_WARNING, "'srat' within non-isom, skip\n");
+        return 0;
+    }
+
+    avio_skip(pb, 4); // version+flags
+    sample_rate = avio_rb32(pb);
+    if (sample_rate > 0) {
+        av_log(c->fc, AV_LOG_DEBUG,
+               "overwrite sample rate from %d to %d by 'srat'\n",
+               st->codecpar->sample_rate, sample_rate);
+        st->codecpar->sample_rate = sample_rate;
+    } else {
+        av_log(c->fc, AV_LOG_WARNING,
+               "ignore invalid sample rate %d in 'srat'\n", sample_rate);
+    }
+
+    return 0;
+}
 
 static int mov_read_dec3(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
@@ -2677,12 +2712,18 @@ static void mov_parse_stsd_video(MOVContext *c, AVIOContext *pb,
      * read in ff_mov_read_stsd_entries() */
     stsd_start = avio_tell(pb) - 16;
 
-    avio_rb16(pb); /* version */
-    avio_rb16(pb); /* revision level */
-    id = avio_rl32(pb); /* vendor */
-    av_dict_set(&st->metadata, "vendor_id", av_fourcc2str(id), 0);
-    avio_rb32(pb); /* temporal quality */
-    avio_rb32(pb); /* spatial quality */
+    if (c->isom) {
+        avio_skip(pb, 2);  /* pre_defined */
+        avio_skip(pb, 2);  /* reserved */
+        avio_skip(pb, 12); /* pre_defined */
+    } else {
+        avio_rb16(pb); /* version */
+        avio_rb16(pb); /* revision level */
+        id = avio_rl32(pb); /* vendor */
+        av_dict_set(&st->metadata, "vendor_id", av_fourcc2str(id), 0);
+        avio_rb32(pb); /* temporal quality */
+        avio_rb32(pb); /* spatial quality */
+    }
 
     st->codecpar->width  = avio_rb16(pb); /* width */
     st->codecpar->height = avio_rb16(pb); /* height */
@@ -2732,9 +2773,13 @@ static void mov_parse_stsd_audio(MOVContext *c, AVIOContext *pb,
     AVDictionaryEntry *compatible_brands = av_dict_get(c->fc->metadata, "compatible_brands", NULL, AV_DICT_MATCH_CASE);
     int channel_count;
 
-    avio_rb16(pb); /* revision level */
-    id = avio_rl32(pb); /* vendor */
-    av_dict_set(&st->metadata, "vendor_id", av_fourcc2str(id), 0);
+    if (c->isom)
+        avio_skip(pb, 6); /* reserved */
+    else {
+        avio_rb16(pb); /* revision level */
+        id = avio_rl32(pb); /* vendor */
+        av_dict_set(&st->metadata, "vendor_id", av_fourcc2str(id), 0);
+    }
 
     channel_count = avio_rb16(pb);
 
@@ -5119,7 +5164,8 @@ static int sanity_checks(void *log_obj, MOVStreamContext *sc, int index)
 {
     if ((sc->chunk_count && (!sc->stts_count || !sc->stsc_count ||
                             (!sc->sample_size && !sc->sample_count))) ||
-        (!sc->chunk_count && sc->sample_count)) {
+        (sc->sample_count && (!sc->chunk_count ||
+                             (!sc->sample_size && !sc->sample_sizes)))) {
         av_log(log_obj, AV_LOG_ERROR, "stream %d, missing mandatory atoms, broken header\n",
                index);
         return 1;
@@ -6182,7 +6228,8 @@ static int mov_read_sidx(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             }
         }
 
-        c->frag_index.complete = 1;
+        if (offadd == 0)
+            c->frag_index.complete = 1;
     }
 
     return 0;
@@ -6667,7 +6714,8 @@ static int mov_read_pack(MOVContext *c, AVIOContext *pb, MOVAtom atom)
                 // This means value will be set in another layer
                 break;
             default:
-                av_log(c->fc, AV_LOG_WARNING, "Unknown tag in pkin: 0x%08X\n", tag);
+                av_log(c->fc, AV_LOG_WARNING, "Unknown tag in pkin: %s\n",
+                       av_fourcc2str(tag));
                 avio_skip(pb, size - 8);
                 break;
             }
@@ -6675,7 +6723,8 @@ static int mov_read_pack(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             break;
         }
         default:
-            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in pack: 0x%08X\n", tag);
+            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in pack: %s\n",
+                   av_fourcc2str(tag));
             avio_skip(pb, size - 8);
             break;
         }
@@ -6852,25 +6901,33 @@ static int mov_read_vexu_proj(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     st = c->fc->streams[c->fc->nb_streams - 1];
     sc = st->priv_data;
 
-    if (atom.size != 16) {
+    if (atom.size < 16) {
         av_log(c->fc, AV_LOG_ERROR, "Invalid size for proj box: %"PRIu64"\n", atom.size);
         return AVERROR_INVALIDDATA;
     }
 
     size = avio_rb32(pb);
-    if (size != 16) {
+    if (size < 16) {
         av_log(c->fc, AV_LOG_ERROR, "Invalid size for prji box: %d\n", size);
         return AVERROR_INVALIDDATA;
+    } else if (size > 16) {
+        av_log(c->fc, AV_LOG_WARNING, "Box has more bytes (%d) than prji box required (16) \n", size);
     }
 
     tag = avio_rl32(pb);
     if (tag != MKTAG('p','r','j','i')) {
-        av_log(c->fc, AV_LOG_ERROR, "Invalid child box of proj box: 0x%08X\n", tag);
+        av_log(c->fc, AV_LOG_ERROR, "Invalid child box of proj box: %s\n",
+               av_fourcc2str(tag));
         return AVERROR_INVALIDDATA;
     }
 
-    avio_skip(pb, 1); // version
-    avio_skip(pb, 3); // flags
+     // version and flags, only support (0, 0)
+    unsigned n = avio_rl32(pb);
+    if (n != 0) {
+        av_log(c->fc, AV_LOG_ERROR, "prji version %u, flag %u are not supported\n",
+               n & 0xFF, n >> 8);
+        return AVERROR_PATCHWELCOME;
+    }
 
     tag = avio_rl32(pb);
     switch (tag) {
@@ -6890,7 +6947,7 @@ static int mov_read_vexu_proj(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         projection = AV_SPHERICAL_PARAMETRIC_IMMERSIVE;
         break;
     default:
-        av_log(c->fc, AV_LOG_ERROR, "Invalid projection type in prji box: 0x%08X\n", tag);
+        av_log(c->fc, AV_LOG_ERROR, "Invalid projection type in prji box: %s\n", av_fourcc2str(tag));
         return AVERROR_INVALIDDATA;
     }
 
@@ -7003,7 +7060,8 @@ static int mov_read_eyes(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
             subtag = avio_rl32(pb);
             if (subtag != MKTAG('b','l','i','n')) {
-                av_log(c->fc, AV_LOG_ERROR, "Expected blin box, got 0x%08X\n", subtag);
+                av_log(c->fc, AV_LOG_ERROR, "Expected blin box, got %s\n",
+                       av_fourcc2str(subtag));
                 return AVERROR_INVALIDDATA;
             }
 
@@ -7031,7 +7089,8 @@ static int mov_read_eyes(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
             subtag = avio_rl32(pb);
             if (subtag != MKTAG('d','a','d','j')) {
-                av_log(c->fc, AV_LOG_ERROR, "Expected dadj box, got 0x%08X\n", subtag);
+                av_log(c->fc, AV_LOG_ERROR, "Expected dadj box, got %s\n",
+                       av_fourcc2str(subtag));
                 return AVERROR_INVALIDDATA;
             }
 
@@ -7046,7 +7105,8 @@ static int mov_read_eyes(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             break;
         }
         default:
-            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in eyes: 0x%08X\n", tag);
+            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in eyes: %s\n",
+                   av_fourcc2str(tag));
             avio_skip(pb, size - 8);
             break;
         }
@@ -7123,7 +7183,8 @@ static int mov_read_vexu(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             break;
         }
         default:
-            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in vexu: 0x%08X\n", tag);
+            av_log(c->fc, AV_LOG_WARNING, "Unknown tag in vexu: %s\n",
+                   av_fourcc2str(tag));
             avio_skip(pb, size - 8);
             break;
         }
@@ -9464,6 +9525,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 #if CONFIG_IAMFDEC
 { MKTAG('i','a','c','b'), mov_read_iacb },
 #endif
+{ MKTAG('s','r','a','t'), mov_read_srat },
 { 0, NULL }
 };
 

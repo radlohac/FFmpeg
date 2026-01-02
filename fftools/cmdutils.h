@@ -158,6 +158,10 @@ unsigned stream_specifier_match(const StreamSpecifier *ss,
                                 const AVFormatContext *s, const AVStream *st,
                                 void *logctx);
 
+unsigned stream_group_specifier_match(const StreamSpecifier *ss,
+                                      const AVFormatContext *s, const AVStreamGroup *stg,
+                                      void *logctx);
+
 void stream_specifier_uninit(StreamSpecifier *ss);
 
 typedef struct SpecifierOpt {
@@ -544,5 +548,13 @@ void remove_avoptions(AVDictionary **a, AVDictionary *b);
 int check_avoptions(AVDictionary *m);
 
 int cmdutils_isalnum(char c);
+
+/**
+ * This does the same as libavformat/dump.c corresponding function
+ * and should probably be kept in sync when the other one changes.
+ */
+void dump_dictionary(void *ctx, const AVDictionary *m,
+                     const char *name, const char *indent,
+                     int log_level);
 
 #endif /* FFTOOLS_CMDUTILS_H */

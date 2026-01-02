@@ -16,8 +16,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "config_components.h"
-
 #include "libavutil/avassert.h"
 #include "libavutil/frame.h"
 #include "libavutil/imgutils.h"
@@ -28,7 +26,6 @@
 #include "decode.h"
 #include "lcevcdec.h"
 
-#if CONFIG_LIBLCEVC_DEC
 static LCEVC_ColorFormat map_format(int format)
 {
     switch (format) {
@@ -52,13 +49,12 @@ static int alloc_base_frame(void *logctx, FFLCEVCContext *lcevc,
 {
     LCEVC_PictureDesc desc;
     LCEVC_ColorFormat fmt = map_format(frame->format);
-    LCEVC_PictureLockHandle lock;
-    uint8_t *data[4] = { NULL };
-    int linesizes[4] = { 0 };
-    uint32_t planes;
+    LCEVC_PicturePlaneDesc planes[AV_VIDEO_MAX_PLANES] = { 0 };
+    int width = frame->width - frame->crop_left - frame->crop_right;
+    int height = frame->height - frame->crop_top - frame->crop_bottom;
     LCEVC_ReturnCode res;
 
-    res = LCEVC_DefaultPictureDesc(&desc, fmt, frame->width, frame->height);
+    res = LCEVC_DefaultPictureDesc(&desc, fmt, width, height);
     if (res != LCEVC_Success)
         return AVERROR_EXTERNAL;
 
@@ -69,36 +65,16 @@ static int alloc_base_frame(void *logctx, FFLCEVCContext *lcevc,
     desc.sampleAspectRatioNum  = frame->sample_aspect_ratio.num;
     desc.sampleAspectRatioDen  = frame->sample_aspect_ratio.den;
 
+    for (int i = 0; i < AV_VIDEO_MAX_PLANES; i++) {
+        planes[i].firstSample = frame->data[i];
+        planes[i].rowByteStride = frame->linesize[i];
+    }
+
     /* Allocate LCEVC Picture */
-    res = LCEVC_AllocPicture(lcevc->decoder, &desc, picture);
+    res = LCEVC_AllocPictureExternal(lcevc->decoder, &desc, NULL, planes, picture);
     if (res != LCEVC_Success) {
         return AVERROR_EXTERNAL;
     }
-    res = LCEVC_LockPicture(lcevc->decoder, *picture, LCEVC_Access_Write, &lock);
-    if (res != LCEVC_Success)
-        return AVERROR_EXTERNAL;
-
-    res = LCEVC_GetPicturePlaneCount(lcevc->decoder, *picture, &planes);
-    if (res != LCEVC_Success)
-        return AVERROR_EXTERNAL;
-
-    for (unsigned i = 0; i < planes; i++) {
-        LCEVC_PicturePlaneDesc plane;
-
-        res = LCEVC_GetPictureLockPlaneDesc(lcevc->decoder, lock, i, &plane);
-        if (res != LCEVC_Success)
-            return AVERROR_EXTERNAL;
-
-        data[i] = plane.firstSample;
-        linesizes[i] = plane.rowByteStride;
-    }
-
-    av_image_copy2(data, linesizes, frame->data, frame->linesize,
-                   frame->format, frame->width, frame->height);
-
-    res = LCEVC_UnlockPicture(lcevc->decoder, lock);
-    if (res != LCEVC_Success)
-        return AVERROR_EXTERNAL;
 
     return 0;
 }
@@ -150,8 +126,10 @@ static int lcevc_send_frame(void *logctx, FFLCEVCFrame *frame_ctx, const AVFrame
         return ret;
 
     res = LCEVC_SendDecoderBase(lcevc->decoder, in->pts, picture, -1, NULL);
-    if (res != LCEVC_Success)
+    if (res != LCEVC_Success) {
+        LCEVC_FreePicture(lcevc->decoder, picture);
         return AVERROR_EXTERNAL;
+    }
 
     memset(&picture, 0, sizeof(picture));
     ret = alloc_enhanced_frame(logctx, frame_ctx, &picture);
@@ -159,8 +137,10 @@ static int lcevc_send_frame(void *logctx, FFLCEVCFrame *frame_ctx, const AVFrame
         return ret;
 
     res = LCEVC_SendDecoderPicture(lcevc->decoder, picture);
-    if (res != LCEVC_Success)
+    if (res != LCEVC_Success) {
+        LCEVC_FreePicture(lcevc->decoder, picture);
         return AVERROR_EXTERNAL;
+    }
 
     return 0;
 }
@@ -178,8 +158,10 @@ static int generate_output(void *logctx, FFLCEVCFrame *frame_ctx, AVFrame *out)
         return AVERROR_EXTERNAL;
 
     res = LCEVC_GetPictureDesc(lcevc->decoder, picture, &desc);
-    if (res != LCEVC_Success)
+    if (res != LCEVC_Success) {
+        LCEVC_FreePicture(lcevc->decoder, picture);
         return AVERROR_EXTERNAL;
+    }
 
     out->crop_top = desc.cropTop;
     out->crop_bottom = desc.cropBottom;
@@ -249,11 +231,9 @@ static void lcevc_free(AVRefStructOpaque unused, void *obj)
         LCEVC_DestroyDecoder(lcevc->decoder);
     memset(lcevc, 0, sizeof(*lcevc));
 }
-#endif
 
 static int lcevc_init(FFLCEVCContext *lcevc, void *logctx)
 {
-#if CONFIG_LIBLCEVC_DEC
     LCEVC_AccelContextHandle dummy = { 0 };
     const int32_t event = LCEVC_Log;
 
@@ -272,7 +252,6 @@ static int lcevc_init(FFLCEVCContext *lcevc, void *logctx)
         return AVERROR_EXTERNAL;
     }
 
-#endif
     lcevc->initialized = 1;
 
     return 0;
@@ -291,7 +270,6 @@ int ff_lcevc_process(void *logctx, AVFrame *frame)
             return ret;
     }
 
-#if CONFIG_LIBLCEVC_DEC
     av_assert0(frame_ctx->frame);
 
 
@@ -304,7 +282,6 @@ int ff_lcevc_process(void *logctx, AVFrame *frame)
         return ret;
 
     av_frame_remove_side_data(frame, AV_FRAME_DATA_LCEVC);
-#endif
 
     return 0;
 }
@@ -312,11 +289,9 @@ int ff_lcevc_process(void *logctx, AVFrame *frame)
 int ff_lcevc_alloc(FFLCEVCContext **plcevc)
 {
     FFLCEVCContext *lcevc = NULL;
-#if CONFIG_LIBLCEVC_DEC
     lcevc = av_refstruct_alloc_ext(sizeof(*lcevc), 0, NULL, lcevc_free);
     if (!lcevc)
         return AVERROR(ENOMEM);
-#endif
     *plcevc = lcevc;
     return 0;
 }
