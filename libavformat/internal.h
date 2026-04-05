@@ -315,6 +315,21 @@ typedef struct FFStream {
     struct AVCodecParserContext *parser;
 
     /**
+     * The generic code uses this as a temporary packet
+     * to parse packets or for muxing, especially flushing.
+     * For demuxers, it may also be used for other means
+     * for short periods that are guaranteed not to overlap
+     * with calls to av_read_frame() (or ff_read_packet())
+     * or with each other.
+     * It may be used by demuxers as a replacement for
+     * stack packets (unless they call one of the aforementioned
+     * functions with their own AVFormatContext).
+     * Every user has to ensure that this packet is blank
+     * after using it.
+     */
+    AVPacket *parse_pkt;
+
+    /**
      * Number of frames that have been demuxed during avformat_find_stream_info()
      */
     int codec_info_nb_frames;
@@ -614,6 +629,16 @@ int ff_bprint_to_codecpar_extradata(AVCodecParameters *par, struct AVBPrint *buf
  * set the legacy filename field to the same string which was provided in url.
  */
 void ff_format_set_url(AVFormatContext *s, char *url);
+
+/**
+ * Set AVFormatContext url field to a av_strdup of the provided pointer. The pointer must
+ * point to a valid string. The existing url field is freed if necessary.
+ *
+ * Checks protocol_whitelist/blacklist
+ *
+ * @returns a AVERROR code or non negative on success
+ */
+int ff_format_check_set_url(AVFormatContext *s, const char *url);
 
 /**
  * Return a positive value if the given url has one of the given

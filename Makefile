@@ -11,6 +11,8 @@ vpath %.asm  $(SRC_PATH)
 vpath %.rc   $(SRC_PATH)
 vpath %.v    $(SRC_PATH)
 vpath %.texi $(SRC_PATH)
+vpath %.glsl $(SRC_PATH)
+vpath %.spv  $(SRC_PATH)
 vpath %.cu   $(SRC_PATH)
 vpath %.ptx  $(SRC_PATH)
 vpath %.metal $(SRC_PATH)
@@ -111,7 +113,7 @@ SUBDIR_VARS := CLEANFILES FFLIBS HOSTPROGS TESTPROGS TOOLS               \
                MIPSFPU-OBJS MIPSDSPR2-OBJS MIPSDSP-OBJS MSA-OBJS         \
                MMI-OBJS LSX-OBJS LASX-OBJS RV-OBJS RVV-OBJS RVVB-OBJS    \
                OBJS SHLIBOBJS STLIBOBJS HOSTOBJS TESTOBJS SIMD128-OBJS   \
-               SVE-OBJS SVE2-OBJS SME-OBJS
+               SVE-OBJS SVE2-OBJS SME-OBJS SME2-OBJS
 
 define RESET
 $(1) :=
