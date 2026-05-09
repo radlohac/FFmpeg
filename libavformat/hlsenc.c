@@ -830,6 +830,14 @@ static int hls_mux_init(AVFormatContext *s, VariantStream *vs)
         st->id = vs->streams[i]->id;
     }
 
+    for (i = 0; i < s->nb_programs; i++) {
+        ret = av_program_copy(oc, (const AVFormatContext *)s, s->programs[i]->id, 0);
+        if (ret < 0) {
+            av_log(s, AV_LOG_ERROR, "unable to transfer program %d to child muxer\n", s->programs[i]->id);
+            return ret;
+        }
+    }
+
     vs->start_pos = 0;
     vs->new_start = 1;
 
@@ -2971,8 +2979,12 @@ static int hls_init(AVFormatContext *s)
         if (vs->has_video > 1)
             av_log(s, AV_LOG_WARNING, "More than a single video stream present, expect issues decoding it.\n");
         if (hls->segment_type == SEGMENT_TYPE_FMP4) {
+#if CONFIG_MP4_MUXER
             EXTERN const FFOutputFormat ff_mp4_muxer;
             vs->oformat = &ff_mp4_muxer.p;
+#else
+            return AVERROR_MUXER_NOT_FOUND;
+#endif
         } else {
             EXTERN const FFOutputFormat ff_mpegts_muxer;
             vs->oformat = &ff_mpegts_muxer.p;

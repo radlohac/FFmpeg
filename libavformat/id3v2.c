@@ -27,6 +27,7 @@
  */
 
 #include "config.h"
+#include "libavutil/attributes.h"
 
 #if CONFIG_ZLIB
 #include <zlib.h>
@@ -132,16 +133,17 @@ const char * const ff_id3v2_picture_types[21] = {
 };
 
 const CodecMime ff_id3v2_mime_tags[] = {
-    { "image/gif",  AV_CODEC_ID_GIF   },
-    { "image/jpeg", AV_CODEC_ID_MJPEG },
-    { "image/jpg",  AV_CODEC_ID_MJPEG },
-    { "image/png",  AV_CODEC_ID_PNG   },
-    { "image/tiff", AV_CODEC_ID_TIFF  },
-    { "image/bmp",  AV_CODEC_ID_BMP   },
-    { "image/webp", AV_CODEC_ID_WEBP  },
-    { "JPG",        AV_CODEC_ID_MJPEG }, /* ID3v2.2  */
-    { "PNG",        AV_CODEC_ID_PNG   }, /* ID3v2.2  */
-    { "",           AV_CODEC_ID_NONE  },
+    { "image/gif",  AV_CODEC_ID_GIF    },
+    { "image/jpeg", AV_CODEC_ID_MJPEG  },
+    { "image/jpg",  AV_CODEC_ID_MJPEG  },
+    { "image/jxl",  AV_CODEC_ID_JPEGXL },
+    { "image/png",  AV_CODEC_ID_PNG    },
+    { "image/tiff", AV_CODEC_ID_TIFF   },
+    { "image/bmp",  AV_CODEC_ID_BMP    },
+    { "image/webp", AV_CODEC_ID_WEBP   },
+    { "JPG",        AV_CODEC_ID_MJPEG  }, /* ID3v2.2  */
+    { "PNG",        AV_CODEC_ID_PNG    }, /* ID3v2.2  */
+    { "",           AV_CODEC_ID_NONE   },
 };
 
 int ff_id3v2_match(const uint8_t *buf, const char *magic)
@@ -281,6 +283,7 @@ static int decode_str(AVFormatContext *s, AVIOContext *pb, int encoding,
         switch (bom) {
         case 0xfffe:
             get = avio_rl16;
+            break;
         case 0xfeff:
             break;
         case 0: // empty string without bom
@@ -292,7 +295,7 @@ static int decode_str(AVFormatContext *s, AVIOContext *pb, int encoding,
             *maxread = left;
             return AVERROR_INVALIDDATA;
         }
-        // fall-through
+        av_fallthrough;
 
     case ID3v2_ENCODING_UTF16BE:
         while ((left > 1) && ch) {
@@ -1052,6 +1055,24 @@ static void id3v2_parse(AVIOContext *pb, AVDictionary **metadata,
                     pbx = &pb_local.pub; // read from sync buffer
                 }
 #endif
+            if (s && (s->debug & FF_FDEBUG_ID3V2)) {
+                int64_t pos = avio_tell(pbx);
+                uint8_t *buf = av_malloc(tlen);
+                if (buf) {
+                    AVBPrint bp;
+                    int n = avio_read(pbx, buf, tlen);
+                    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+                    av_bprintf(&bp, "|");
+                    for (int i = 0; i < n; i++)
+                        av_bprintf(&bp, "%c", buf[i] >= 0x20 && buf[i] < 0x7f ? buf[i] : '.');
+                    av_bprintf(&bp, "|");
+                    av_log(NULL, AV_LOG_INFO, "ID3v2 frame %.4s (%d bytes):%s\n",
+                           tag, tlen, bp.str);
+                    av_bprint_finalize(&bp, NULL);
+                    av_free(buf);
+                    avio_seek(pbx, pos, SEEK_SET);
+                }
+            }
             if (tag[0] == 'T')
                 /* parse text tag */
                 read_ttag(s, pbx, tlen, metadata, tag);
